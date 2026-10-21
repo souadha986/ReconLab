@@ -12,8 +12,8 @@ _BAD = re.compile(r"""[\s;|&$`<>\\'"(){}]""")
 @dataclass(frozen=True)
 class Target:
     raw: str
-    host: str            # Bare hostname, IP, or network range
-    kind: str            # "domain" | "ip" | "network"
+    host: str            
+    kind: str            
 
 
 def parse_target(raw: str) -> tuple[Optional[Target], Optional[str]]:
@@ -61,25 +61,23 @@ def validate_target_for_modules(target: Target, selected_module_ids: list[str]) 
     errors = []
 
     for mid in selected_module_ids:
-        # DNS requires a Domain Name only
+        
         if mid == "dns" and target.kind != "domain":
             errors.append(
                 "DNS Enumeration requires a domain name (e.g. example.com). IP addresses and CIDR networks are not allowed."
             )
 
-        # Web Enumeration requires a Domain Name only
         elif mid == "web" and target.kind != "domain":
             errors.append(
                 "Web Enumeration requires a domain name (e.g. example.com). IP addresses and CIDR networks are not allowed."
             )
 
-        # Service Enumeration allows single IPs or Domains (No CIDR networks)
         elif mid == "services" and target.kind not in ("ip", "domain"):
             errors.append(
                 "Service Enumeration requires a single IP address or domain name. CIDR network blocks are not allowed."
             )
 
-        # Host Discovery allows Domains, IPs, or CIDR Networks
+        
         elif mid == "hosts" and target.kind not in ("ip", "domain", "network"):
             errors.append(
                 "Host Discovery requires a valid domain name, IP address, or CIDR network block."

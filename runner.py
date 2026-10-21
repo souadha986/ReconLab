@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import catalog
-import dns_recon  # Remplacement de dns_recon par le backend DNS réel
+import dns_recon  
 import host_discovery
 import nmap_scripts
 import service_scan

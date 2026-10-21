@@ -1,4 +1,4 @@
-"""Web Enumeration backend using httpx for ReconLab framework."""
+
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -47,7 +47,7 @@ def run(target, options, emit) -> dict:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ReconLab/1.0"
     }
 
-    # Header Inspection
+   
     if "headers" in options or not options:
         emit("info", f"[*] Inspecting HTTP headers for: {base_url}")
         try:

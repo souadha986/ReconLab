@@ -17,9 +17,7 @@ class Module(NamedTuple):
     needs_nmap: bool = False
 
 
-# ---------------------------------------------------------
-# Module catalogue
-# ---------------------------------------------------------
+
 
 MODULES = (
     Module(
