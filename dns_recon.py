@@ -10,7 +10,6 @@ import dns.zone
 
 STATUS = "ready"
 
-# Standard record types queried automatically
 DEFAULT_RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]
 
 COMMON_SUBDOMAINS = [
@@ -59,9 +58,6 @@ def run(target, options, emit) -> dict:
 
     emit("cmd", f"Starting DNS Enumeration for: {domain}")
 
-    # =========================================================
-    # Step 1: Attempt Zone Transfer (AXFR)
-    # =========================================================
     axfr_success = False
     emit("info", f"[*] Attempting Zone Transfer (AXFR) on {domain}...")
     try:
@@ -103,14 +99,11 @@ def run(target, options, emit) -> dict:
     except Exception as exc:
         emit("warn", f"[-] Could not retrieve NS records for AXFR: {exc}")
 
-    # If AXFR succeeded, we have the complete zone, so return early
+  
     if axfr_success:
         emit("ok", f"DNS Enumeration complete via Zone Transfer ({len(records_found)} records retrieved).")
         return {"records": records_found}
 
-    # =========================================================
-    # Step 2: Query Standard DNS Records (Automatic)
-    # =========================================================
     emit("info", f"[*] Querying base DNS records: {', '.join(DEFAULT_RECORD_TYPES)}...")
     
     for rtype in DEFAULT_RECORD_TYPES:
@@ -125,9 +118,6 @@ def run(target, options, emit) -> dict:
         except Exception as exc:
             emit("error", f"  [!] Error querying {rtype}: {exc}")
 
-    # =========================================================
-    # Step 3: Multi-Threaded Subdomain Brute-Forcing (Automatic)
-    # =========================================================
     max_threads = 10
     emit("info", f"[*] Brute-forcing subdomains for {domain} ({max_threads} threads)...")
     found_subdomains = 0
