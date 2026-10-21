@@ -1,4 +1,3 @@
-import shutil
 import sys
 from datetime import datetime
 
@@ -8,10 +7,6 @@ import catalog
 import ui
 from runner import BACKENDS, ScanSession, start_scan
 from validation import parse_target, validate_target_for_modules
-
-# ---------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="ReconLab",
@@ -24,7 +19,6 @@ ui.inject_css()
 
 ss = st.session_state
 MODS = catalog.MODULES
-NMAP_OK = shutil.which("nmap") is not None
 
 SERVICES = BACKENDS["services"]
 
@@ -34,10 +28,6 @@ PORT_MODE_LABELS = {
     "common": "Common service ports",
     "custom": "Custom ports",
 }
-
-# ---------------------------------------------------------
-# Session state
-# ---------------------------------------------------------
 
 ss.setdefault("scan", ScanSession())
 
@@ -50,34 +40,22 @@ for module in MODS:
             option.default,
         )
 
-ss.setdefault("nmap_auth", False)
 ss.setdefault("host_discovery_method", "icmp")
 ss.setdefault("services_port_mode", "all_ports")
 ss.setdefault("services_custom_ports", "")
 ss.setdefault("services_proto_tcp", True)
 ss.setdefault("services_proto_udp", False)
 
-if not NMAP_OK:
-    ss["mod_nmap"] = False
-
 scan = ss.scan
 running = scan.running
 
 
-# ---------------------------------------------------------
-# Module selection
-# ---------------------------------------------------------
-
 def set_all(value):
     for module in MODS:
-        ss[f"mod_{module.id}"] = value and (
-            NMAP_OK or not module.needs_nmap
-        )
+        ss[f"mod_{module.id}"] = value
 
 
 def module_options(module):
-    """Show module configuration."""
-
     if module.id == "dns":
         st.caption("Standard DNS records (A, AAAA, MX, NS, TXT, CNAME, Subdomains) are queried automatically.")
         return
@@ -147,43 +125,7 @@ def module_options(module):
         st.caption("UDP states: OPEN, CLOSED, OPEN|FILTERED")
         return
 
-    if module.id == "nmap":
-        st.caption(
-            "Nmap found on this machine."
-            if NMAP_OK
-            else "Nmap is NOT installed or not in PATH."
-        )
-
-        for option in catalog.NMAP_SAFE:
-            st.checkbox(
-                option.label,
-                key=f"opt_nmap_{option.id}",
-                disabled=running,
-            )
-
-        st.divider()
-        st.markdown("**Potentially intrusive categories**")
-
-        st.warning(
-            "These can disrupt or change the target. "
-            "Only use them with explicit authorization."
-        )
-
-        for option in catalog.NMAP_INTRUSIVE:
-            st.checkbox(
-                option.label,
-                key=f"opt_nmap_{option.id}",
-                disabled=running,
-            )
-
-        st.checkbox(
-            "I own this target or have written permission "
-            "to run intrusive scripts.",
-            key="nmap_auth",
-            disabled=running,
-        )
-
-    elif module.id == "hosts":
+    if module.id == "hosts":
         st.caption("Select exactly ONE discovery method.")
 
         selected = st.radio(
@@ -213,10 +155,6 @@ def module_options(module):
             )
 
 
-# ---------------------------------------------------------
-# Validation
-# ---------------------------------------------------------
-
 def validate():
     raw_target = ss.get("target", "").strip()
     target, error = parse_target(raw_target)
@@ -244,7 +182,6 @@ def validate():
 
     for module in selected_modules:
         if module.id == "dns":
-            # Pass standard record types automatically
             options[module.id] = ["a", "aaaa", "mx", "ns", "txt", "cname", "subdomains"]
         elif module.id == "services":
             mode = ss["services_port_mode"]
@@ -281,32 +218,16 @@ def validate():
             ]
 
     for module in selected_modules:
-        # Bypasses options check for modules without sub-options
         if module.id in ("dns", "services"):
             continue
 
         if not options[module.id]:
             errors.append(
-                f"{module.title}: choose at least one option "
-                "(gear icon)."
+                f"{module.title}: choose at least one option (gear icon)."
             )
-
-    if (
-        "nmap" in options
-        and set(options["nmap"]) & catalog.INTRUSIVE_IDS
-        and not ss["nmap_auth"]
-    ):
-        errors.append(
-            "Intrusive Nmap categories need the "
-            "authorization checkbox ticked."
-        )
 
     return target, selected_modules, options, errors
 
-
-# ---------------------------------------------------------
-# Terminal
-# ---------------------------------------------------------
 
 def terminal_panel(scan, status_at_run):
     lines, total = scan.snapshot()
@@ -338,10 +259,6 @@ def terminal_panel(scan, status_at_run):
     if scan.status != status_at_run:
         st.rerun()
 
-
-# ---------------------------------------------------------
-# Results helpers
-# ---------------------------------------------------------
 
 def outcome(module_id):
     return scan.outcomes.get(module_id, {})
@@ -384,10 +301,6 @@ def table(module_id, key, columns):
     st.caption(message)
 
 
-# ---------------------------------------------------------
-# Results
-# ---------------------------------------------------------
-
 def results_section():
     st.markdown(
         '<div class="sec">Scan Results</div>',
@@ -416,7 +329,6 @@ def results_section():
         ("DNS", ["dns"]),
         ("Web", ["web"]),
         ("Hosts & Services", ["hosts", "services"]),
-        ("Nmap", ["nmap"]),
     ]
 
     names = ["Overview"] + [
@@ -427,7 +339,6 @@ def results_section():
 
     tabs = dict(zip(names, st.tabs(names)))
 
-    # Overview
     with tabs["Overview"]:
         columns = st.columns(4)
 
@@ -459,7 +370,6 @@ def results_section():
                 ("Web pages", "web", "pages"),
                 ("Hosts", "hosts", "hosts"),
                 ("Services", "services", "services"),
-                ("Nmap findings", "nmap", "findings"),
             ]
             if module_id in ran
         ]
@@ -540,32 +450,13 @@ def results_section():
                     ],
                 )
 
-    if "Nmap" in tabs:
-        with tabs["Nmap"]:
-            st.caption(
-                "Selected scripts: "
-                + (
-                    ", ".join(scan.options.get("nmap", []))
-                    or "none"
-                )
-            )
-
-            table("nmap", "findings", ["script", "detail"])
-
-
-# ---------------------------------------------------------
-# Main layout
-# ---------------------------------------------------------
 
 ui.header(scan.status)
 
 with st.sidebar:
     st.markdown("**Environment**")
 
-    st.caption(
-        f"Python {sys.version.split()[0]}  \n"
-        f"Nmap: {'found' if NMAP_OK else 'not found'}"
-    )
+    st.caption(f"Python {sys.version.split()[0]}")
 
     st.markdown("**Backend status**")
 
@@ -584,7 +475,6 @@ with st.sidebar:
 
 
 left, right = st.columns([5, 6], gap="medium")
-
 
 with left:
     with st.container(key="panel_target"):
@@ -629,7 +519,7 @@ with left:
         )
 
         for module in MODS:
-            blocked = module.needs_nmap and not NMAP_OK
+            blocked = False
 
             with st.container(key=f"row_{module.id}"):
                 module_column, settings_column = st.columns(
@@ -706,11 +596,9 @@ with left:
             ss.scan = ScanSession()
             st.rerun()
 
-
 with right:
     st.fragment(
         run_every=0.5 if running else None
     )(terminal_panel)(scan, scan.status)
-
 
 results_section()
