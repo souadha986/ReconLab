@@ -41,7 +41,7 @@ In the future, I want to focus more on passive reconnaissance and OSINT by addin
 
 ## How to Run ReconLab
 To run ReconLab, use the following command in the terminal with root privileges:
-sudo streamlit run app.py
+# sudo streamlit run app.py
 Root privileges may be required for certain features, such as raw socket operations used in ICMP host discovery.
 ## Feedback and Contact
 For any feedback, suggestions, or questions about ReconLab, feel free to contact me at hamsashouad04@gmail.com
