@@ -10,13 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 STATUS = "partial"
 
-# NEW: ports used by the TCP fallback probe
 TCP_PROBE_PORTS = [80, 443, 22, 445, 135, 139, 3389, 8080, 53, 21, 23, 5900]
 
 
-# ---------------------------------------------------------------
-# checksum helper for the raw ICMP packet
-# ---------------------------------------------------------------
 def _checksum(data):
     if len(data) % 2:
         data += b"\x00"
@@ -28,13 +24,9 @@ def _checksum(data):
     return ~total & 0xFFFF
 
 
-# ---------------------------------------------------------------
-# CHANGED: raw socket ICMP sweep, now with MULTIPLE PASSES
-# Pass 1 triggers ARP resolution, later passes catch hosts whose
-# first packet was dropped while the OS was resolving their MAC.
-# ---------------------------------------------------------------
+
 def icmp_sweep(targets, timeout=1.0, passes=3):
-    """Fast ICMP sweep using a raw socket (needs root/admin)."""
+   
 
     found = {}
     ident = os.getpid() & 0xFFFF
@@ -55,17 +47,17 @@ def icmp_sweep(targets, timeout=1.0, passes=3):
 
     def sender():
         try:
-            for _ in range(passes):                      # NEW: several passes
+            for _ in range(passes):                      
                 for n, ip in enumerate(targets):
                     try:
                         sock.sendto(build_packet(n), (str(ip), 0))
                     except OSError:
                         pass
 
-                    if n % 128 == 127:                   # CHANGED: smaller bursts
+                    if n % 128 == 127:                  
                         time.sleep(0.005)
 
-                time.sleep(0.3)                          # NEW: let ARP resolve
+                time.sleep(0.3)                          
         finally:
             sent_done.set()
 
@@ -105,10 +97,6 @@ def icmp_sweep(targets, timeout=1.0, passes=3):
 
     return list(found.values())
 
-
-# ---------------------------------------------------------------
-# ARP sweep, very reliable on the local network
-# ---------------------------------------------------------------
 def arp_sweep(cidr, timeout=2):
     """Discover hosts on the local subnet using ARP."""
 
@@ -124,11 +112,6 @@ def arp_sweep(cidr, timeout=2):
     return [{"ip": r.psrc, "state": "up"} for _, r in answered]
 
 
-# ---------------------------------------------------------------
-# NEW: TCP probe, finds hosts that block ping
-# A connection that succeeds OR is refused (RST) proves the host is up.
-# Plain sockets are thread-safe, so threads are fine here.
-# ---------------------------------------------------------------
 def tcp_probe(ip, ports=TCP_PROBE_PORTS, timeout=0.5):
     """Return True if the host answers on any of the given TCP ports."""
 
@@ -192,15 +175,12 @@ def run(target, options, emit):
                     emit("error", "Could not resolve the domain.")
                     return {"hosts": []}
 
-        # debug print removed (it was slow on big networks)
-        # for target_ip in targets:
-        #     print(target_ip)
+   
 
     except ValueError:
         emit("error", "Invalid IP address or CIDR.")
         return {"hosts": []}
 
-    # NEW: all methods write into one dict, so no host is listed twice
     found = {}
 
     def add(results):
@@ -208,7 +188,7 @@ def run(target, options, emit):
             found.setdefault(h["ip"], h)
 
     if "icmp" in selected_options:
-        # Case 1: ICMP discovery
+    
 
         if any(ip.version != 4 for ip in targets):
             emit(
@@ -231,9 +211,6 @@ def run(target, options, emit):
         except OSError as exc:
             emit("error", f"ICMP sweep failed: {exc}")
 
-        # ---- Layer 2 (NEW): ARP on private ranges, finds hosts that block ping ----
-        # Only works when the target is on your own subnet; harmless otherwise.
-        # To disable it, comment out this block.
         if "/" in host and network.is_private:
             try:
                 add(arp_sweep(host))
@@ -244,8 +221,6 @@ def run(target, options, emit):
             except ImportError:
                 emit("warn", "ARP sweep needs scapy installed.")
 
-    # CHANGED: was "elif", now a separate "if" so it can run together with ICMP
-    # ---- Layer 3 (NEW): TCP probe, only on hosts not found yet ----
     if "tcp" in selected_options:
         remaining = [ip for ip in targets if str(ip) not in found]
 
@@ -255,17 +230,7 @@ def run(target, options, emit):
         except OSError as exc:
             emit("error", f"TCP sweep failed: {exc}")
 
-    # =========================
-    # 4. ERROR HANDLING
-    # =========================
-    # TODO: Handle errors and report them using emit()
 
-    # =========================
-    # 5. OUTPUT
-    # =========================
-    # Each host contains:
-    # - ip
-    # - state
 
     return {
         "hosts": list(found.values())

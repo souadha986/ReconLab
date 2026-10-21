@@ -1,16 +1,27 @@
-"""Scan orchestration: runs backends in a background thread so the Streamlit UI never blocks.
-The thread only writes to a ScanSession (thread-safe); the UI polls it. No Streamlit calls in here."""
+"""Background scan orchestration for ReconLab."""
+
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 
 import catalog
-import dns_recon, host_discovery, nmap_scripts, service_scan, web_recon
+import dns_recon  # Remplacement de dns_recon par le backend DNS réel
+import host_discovery
+import nmap_scripts
+import service_scan
+import web_recon
 from streaming import clean
 
-BACKENDS = {"dns": dns_recon, "web": web_recon, "hosts": host_discovery,
-            "services": service_scan, "nmap": nmap_scripts}
+
+BACKENDS = {
+    "dns": dns_recon,
+    "web": web_recon,
+    "hosts": host_discovery,
+    "services": service_scan,
+    "nmap": nmap_scripts,
+}
+
 MAX_LINES = 5000
 TITLES = {m.id: m.title for m in catalog.MODULES}
 
@@ -23,66 +34,148 @@ class LogLine:
 
 
 class ScanSession:
-    """idle -> running -> completed | completed_errors. Lives in st.session_state only (no persistence)."""
+    """Thread-safe state for one scan."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self.lines = deque(maxlen=MAX_LINES)
         self.total_lines = 0
+
         self.status = "idle"
         self.target = None
-        self.module_ids: list[str] = []
-        self.options: dict = {}
-        self.outcomes: dict = {}   # module id -> {"status": ok|not_implemented|error, "data": dict, "error": str}
+        self.module_ids = []
+        self.options = {}
+        self.outcomes = {}
+
         self.done = 0
         self.current = ""
-        self.started = self.finished = None
+        self.started = None
+        self.finished = None
 
     @property
-    def running(self) -> bool:
+    def running(self):
         return self.status == "running"
 
     @property
-    def duration(self) -> float:
-        return ((self.finished or time.time()) - self.started) if self.started else 0.0
+    def duration(self):
+        if self.started is None:
+            return 0.0
 
-    def emit(self, level: str, text: str) -> None:
+        end = self.finished or time.time()
+        return end - self.started
+
+    def emit(self, level, message):
         stamp = time.strftime("%H:%M:%S")
+        cleaned = clean(str(message))
+
         with self._lock:
-            for part in clean(str(text)).splitlines() or [""]:
-                self.lines.append(LogLine(stamp, level, part))
+            for part in cleaned.splitlines() or [""]:
+                self.lines.append(
+                    LogLine(stamp, level, part)
+                )
                 self.total_lines += 1
 
-    def snapshot(self, n: int = 400):
+    def snapshot(self, n=400):
         with self._lock:
             return list(self.lines)[-n:], self.total_lines
 
 
-def start_scan(target, module_ids, options) -> ScanSession:
+def start_scan(target, module_ids, options):
+    """Create a session and launch the background worker."""
+
     scan = ScanSession()
-    scan.target, scan.module_ids, scan.options = target, list(module_ids), options
-    scan.started, scan.status = time.time(), "running"
-    threading.Thread(target=_worker, args=(scan,), daemon=True).start()
+    scan.target = target
+    scan.module_ids = list(module_ids)
+    scan.options = options
+    scan.started = time.time()
+    scan.status = "running"
+
+    thread = threading.Thread(
+        target=_worker,
+        args=(scan,),
+        daemon=True,
+    )
+    thread.start()
+
     return scan
 
 
-def _worker(scan: ScanSession) -> None:
-    scan.emit("info", f"Target: {scan.target.host}  |  modules: {', '.join(TITLES[m] for m in scan.module_ids)}")
-    for mid in scan.module_ids:
-        scan.current = TITLES[mid]
-        scan.emit("info", f"Starting {TITLES[mid]}")
-        try:
-            data = BACKENDS[mid].run(scan.target, scan.options[mid], scan.emit)
-            scan.outcomes[mid] = {"status": "ok", "data": data or {}}
-            scan.emit("ok", f"{TITLES[mid]} finished")
-        except NotImplementedError as exc:
-            scan.outcomes[mid] = {"status": "not_implemented", "data": {}}
-            scan.emit("warn", str(exc))
-        except Exception as exc:  # a failing module must not stop the others
-            scan.outcomes[mid] = {"status": "error", "data": {}, "error": f"{type(exc).__name__}: {exc}"}
-            scan.emit("error", f"{TITLES[mid]} failed: {exc}")
-        scan.done += 1
-    scan.finished = time.time()
-    failed = any(o["status"] == "error" for o in scan.outcomes.values())
-    scan.emit("info", f"Scan finished in {scan.duration:.1f}s")
-    scan.status = "completed_errors" if failed else "completed"
+def _worker(scan):
+    """Execute selected modules without blocking Streamlit."""
+
+    try:
+        scan.emit(
+            "info",
+            f"Target: {scan.target.host} | "
+            f"Modules: {', '.join(TITLES[m] for m in scan.module_ids)}",
+        )
+
+        for module_id in scan.module_ids:
+            scan.current = TITLES[module_id]
+
+            scan.emit(
+                "info",
+                f"Starting {TITLES[module_id]}",
+            )
+
+            try:
+                data = BACKENDS[module_id].run(
+                    scan.target,
+                    scan.options.get(module_id, []),
+                    scan.emit,
+                )
+
+                scan.outcomes[module_id] = {
+                    "status": "ok",
+                    "data": data or {},
+                }
+
+                scan.emit(
+                    "ok",
+                    f"{TITLES[module_id]} finished",
+                )
+
+            except NotImplementedError as exc:
+                scan.outcomes[module_id] = {
+                    "status": "not_implemented",
+                    "data": {},
+                }
+                scan.emit("warn", str(exc))
+
+            except Exception as exc:
+                scan.outcomes[module_id] = {
+                    "status": "error",
+                    "data": {},
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+                scan.emit(
+                    "error",
+                    f"{TITLES[module_id]} failed: {exc}",
+                )
+
+            finally:
+                scan.done += 1
+
+    except Exception as exc:
+        scan.emit(
+            "error",
+            f"Controller error: {type(exc).__name__}: {exc}",
+        )
+
+    finally:
+        scan.finished = time.time()
+
+        failed = any(
+            result.get("status") == "error"
+            for result in scan.outcomes.values()
+        )
+
+        scan.emit(
+            "info",
+            f"Scan finished in {scan.duration:.1f}s",
+        )
+
+        scan.status = (
+            "completed_errors" if failed else "completed"
+        )

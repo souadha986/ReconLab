@@ -1,4 +1,5 @@
-"""Module catalogue: what the UI shows. Add a module here + a backend file + an entry in runner.BACKENDS."""
+"""Module catalogue: what the UI shows."""
+
 from typing import NamedTuple
 
 
@@ -16,12 +17,17 @@ class Module(NamedTuple):
     needs_nmap: bool = False
 
 
+# ---------------------------------------------------------
+# Nmap options
+# ---------------------------------------------------------
+
 NMAP_SAFE = (
     Opt("default", "default: common, generally safe scripts", True),
     Opt("safe", "safe: should not affect the target", True),
     Opt("discovery", "discovery: gather extra information"),
     Opt("version", "version: extended service detection"),
 )
+
 NMAP_INTRUSIVE = (
     Opt("vuln", "vuln: check for known vulnerabilities"),
     Opt("auth", "auth: test authentication, e.g. default logins"),
@@ -32,30 +38,66 @@ NMAP_INTRUSIVE = (
     Opt("exploit", "exploit: actively exploit weaknesses"),
     Opt("malware", "malware: look for backdoors and malware"),
 )
-INTRUSIVE_IDS = {o.id for o in NMAP_INTRUSIVE}
+
+INTRUSIVE_IDS = {
+    option.id for option in NMAP_INTRUSIVE
+}
+
+
+# ---------------------------------------------------------
+# Module catalogue
+# ---------------------------------------------------------
 
 MODULES = (
-    Module("dns", "DNS Enumeration", "Look up DNS records and find subdomains.", (
-        Opt("a", "A records", True), Opt("aaaa", "AAAA records", True), Opt("mx", "MX records", True),
-        Opt("ns", "NS records", True), Opt("txt", "TXT records", True), Opt("cname", "CNAME records"),
-        Opt("subdomains", "Subdomain enumeration"))),
-    Module("web", "Web Enumeration", "Inspect HTTP/HTTPS responses and site metadata.", (
-        Opt("status", "HTTP/HTTPS status", True), Opt("headers", "HTTP response headers", True),
-        Opt("redirects", "Redirects", True), Opt("meta", "Page title and metadata"),
-        Opt("tech", "Technology fingerprinting"), Opt("robots", "robots.txt inspection"),
-        Opt("dirs", "Directory discovery"))),
-       Module(
-    "hosts",
-    "Host Discovery",
-    "Discover reachable hosts using ICMP or TCP.",
-    (
-        Opt("icmp", "ICMP Discovery (Ping)", True),
-        Opt("tcp", "TCP Discovery", False),
+    Module(
+        "dns",
+        "DNS Enumeration",
+        "Look up DNS records and find subdomains.",
+        (
+            Opt("a", "A records", True),
+            Opt("aaaa", "AAAA records", True),
+            Opt("mx", "MX records", True),
+            Opt("ns", "NS records", True),
+            Opt("txt", "TXT records", True),
+            Opt("cname", "CNAME records"),
+            Opt("subdomains", "Subdomain enumeration"),
+        ),
     ),
-),
-    Module("services", "Service Enumeration", "Find open TCP ports and identify services.", (
-        Opt("ports", "TCP port discovery", True), Opt("identify", "Service identification", True),
-        Opt("states", "Open / closed / filtered states", True))),
-    Module("nmap", "Nmap NSE Scripts", "Run Nmap script categories. Requires Nmap.",
-           NMAP_SAFE + NMAP_INTRUSIVE, needs_nmap=True),
+
+    Module(
+        "web",
+        "Web Enumeration",
+        "Inspect HTTP response headers and brute-force common directories.",
+        (
+            Opt("headers", "HTTP Response Headers", True),
+            Opt("dirs", "Directory Brute-Forcing", True),
+        ),
+    ),
+
+    Module(
+        "hosts",
+        "Host Discovery",
+        "Discover reachable hosts using ICMP or TCP.",
+        (
+            Opt("icmp", "ICMP Discovery (Ping)", True),
+            Opt("tcp", "TCP Discovery", False),
+        ),
+    ),
+
+    # No options: scan all TCP ports automatically.
+    Module(
+        "services",
+        "Service Enumeration",
+        "Scan TCP ports 1-65535 and report their states.",
+        (),
+        needs_nmap=False,
+    ),
+
+    Module(
+        "nmap",
+        "Nmap NSE Scripts",
+        "Run Nmap script categories. Requires Nmap.",
+        NMAP_SAFE + NMAP_INTRUSIVE,
+        needs_nmap=True,
+    ),
 )

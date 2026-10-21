@@ -1,4 +1,3 @@
-
 import shutil
 import sys
 from datetime import datetime
@@ -8,12 +7,11 @@ import streamlit as st
 import catalog
 import ui
 from runner import BACKENDS, ScanSession, start_scan
-from validation import parse_target
+from validation import parse_target, validate_target_for_modules
 
-
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 # Page configuration
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="ReconLab",
@@ -26,58 +24,140 @@ ui.inject_css()
 
 ss = st.session_state
 MODS = catalog.MODULES
-
 NMAP_OK = shutil.which("nmap") is not None
 
+SERVICES = BACKENDS["services"]
 
-# ---------------------------------------------------------------------
+PORT_MODE_LABELS = {
+    "all_ports": "All ports (1-65535)",
+    "well_known": "Well-known ports (1-1024)",
+    "common": "Common service ports",
+    "custom": "Custom ports",
+}
+
+# ---------------------------------------------------------
 # Session state
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 
 ss.setdefault("scan", ScanSession())
 
-for m in MODS:
-    ss.setdefault(f"mod_{m.id}", False)
+for module in MODS:
+    ss.setdefault(f"mod_{module.id}", False)
 
-    for o in m.options:
-        ss.setdefault(f"opt_{m.id}_{o.id}", o.default)
+    for option in module.options:
+        ss.setdefault(
+            f"opt_{module.id}_{option.id}",
+            option.default,
+        )
 
 ss.setdefault("nmap_auth", False)
 ss.setdefault("host_discovery_method", "icmp")
+ss.setdefault("services_port_mode", "all_ports")
+ss.setdefault("services_custom_ports", "")
+ss.setdefault("services_proto_tcp", True)
+ss.setdefault("services_proto_udp", False)
 
 if not NMAP_OK:
     ss["mod_nmap"] = False
 
-scan: ScanSession = ss.scan
+scan = ss.scan
 running = scan.running
 
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 # Module selection
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 
-def set_all(value: bool):
-    """Select or deselect all available modules."""
-    for m in MODS:
-        ss[f"mod_{m.id}"] = value and (
-            NMAP_OK or not m.needs_nmap
+def set_all(value):
+    for module in MODS:
+        ss[f"mod_{module.id}"] = value and (
+            NMAP_OK or not module.needs_nmap
         )
 
 
-def module_options(m):
-    """Display module options."""
+def module_options(module):
+    """Show module configuration."""
 
-    if m.id == "nmap":
+    if module.id == "dns":
+        st.caption("Standard DNS records (A, AAAA, MX, NS, TXT, CNAME, Subdomains) are queried automatically.")
+        return
+
+    if module.id == "services":
+        st.caption("Choose protocol and which ports to scan.")
+
+        proto_col1, proto_col2 = st.columns(2)
+
+        proto_col1.checkbox(
+            "TCP",
+            key="services_proto_tcp",
+            disabled=running,
+        )
+        proto_col2.checkbox(
+            "UDP",
+            key="services_proto_udp",
+            disabled=running,
+        )
+
+        if not ss["services_proto_tcp"] and not ss["services_proto_udp"]:
+            st.error("Select at least one protocol.")
+
+        st.divider()
+
+        mode = st.radio(
+            "Port selection",
+            options=list(PORT_MODE_LABELS),
+            format_func=lambda value: PORT_MODE_LABELS[value],
+            key="services_port_mode",
+            disabled=running,
+        )
+
+        if mode == "custom":
+            spec = st.text_input(
+                "Ports",
+                placeholder="e.g. 22,80,443,8000-8100",
+                key="services_custom_ports",
+                disabled=running,
+            )
+
+            if spec.strip():
+                try:
+                    count = len(SERVICES.parse_ports(spec))
+                    st.caption(f"{count} port(s) selected.")
+                except ValueError as exc:
+                    st.error(str(exc))
+            else:
+                st.caption(
+                    "Comma-separated ports and ranges, "
+                    "e.g. 22,80,443,8000-8100"
+                )
+        elif mode == "common":
+            st.caption(
+                f"{len(set(SERVICES.COMMON_PORTS))} frequently used "
+                "service ports."
+            )
+
+        if ss["services_proto_udp"] and mode == "all_ports":
+            st.warning(
+                "UDP across all 65535 ports is slow and results are "
+                "ambiguous (no reply = open|filtered). Consider "
+                "'Common service ports' or a custom list for UDP."
+            )
+
+        st.caption("TCP states: OPEN, CLOSED, FILTERED")
+        st.caption("UDP states: OPEN, CLOSED, OPEN|FILTERED")
+        return
+
+    if module.id == "nmap":
         st.caption(
             "Nmap found on this machine."
             if NMAP_OK
             else "Nmap is NOT installed or not in PATH."
         )
 
-        for o in catalog.NMAP_SAFE:
+        for option in catalog.NMAP_SAFE:
             st.checkbox(
-                o.label,
-                key=f"opt_nmap_{o.id}",
+                option.label,
+                key=f"opt_nmap_{option.id}",
                 disabled=running,
             )
 
@@ -89,10 +169,10 @@ def module_options(m):
             "Only use them with explicit authorization."
         )
 
-        for o in catalog.NMAP_INTRUSIVE:
+        for option in catalog.NMAP_INTRUSIVE:
             st.checkbox(
-                o.label,
-                key=f"opt_nmap_{o.id}",
+                option.label,
+                key=f"opt_nmap_{option.id}",
                 disabled=running,
             )
 
@@ -103,69 +183,112 @@ def module_options(m):
             disabled=running,
         )
 
-    elif m.id == "hosts":
+    elif module.id == "hosts":
         st.caption("Select exactly ONE discovery method.")
 
         selected = st.radio(
             "Discovery method",
             options=["icmp", "tcp"],
-            format_func=lambda x: {
+            format_func=lambda value: {
                 "icmp": "ICMP Discovery (Ping)",
                 "tcp": "TCP Discovery",
-            }[x],
+            }[value],
             key="host_discovery_method",
             disabled=running,
         )
 
-        # Synchronize the selected radio value with the
-        # option IDs used by validate() and the runner.
-        for o in m.options:
-            ss[f"opt_{m.id}_{o.id}"] = (o.id == selected)
+        for option in module.options:
+            ss[f"opt_{module.id}_{option.id}"] = (
+                option.id == selected
+            )
 
     else:
         st.caption("Choose what this module collects.")
 
-        for o in m.options:
+        for option in module.options:
             st.checkbox(
-                o.label,
-                key=f"opt_{m.id}_{o.id}",
+                option.label,
+                key=f"opt_{module.id}_{option.id}",
                 disabled=running,
             )
 
 
-# ---------------------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
+# Validation
+# ---------------------------------------------------------
 
 def validate():
-    """Validate the target, modules, and selected options."""
+    raw_target = ss.get("target", "").strip()
+    target, error = parse_target(raw_target)
 
-    target, err = parse_target(ss.get("target", ""))
     errors = []
 
-    if err:
-        errors.append(err)
+    if error:
+        errors.append(error)
 
     selected_modules = [
-        m for m in MODS
-        if ss[f"mod_{m.id}"]
+        module
+        for module in MODS
+        if ss[f"mod_{module.id}"]
     ]
-
-    options = {
-        m.id: [
-            o.id for o in m.options
-            if ss[f"opt_{m.id}_{o.id}"]
-        ]
-        for m in selected_modules
-    }
 
     if not selected_modules:
         errors.append("Select at least one module.")
 
-    for m in selected_modules:
-        if not options[m.id]:
+    if target and selected_modules:
+        selected_ids = [m.id for m in selected_modules]
+        target_errors = validate_target_for_modules(target, selected_ids)
+        errors.extend(target_errors)
+
+    options = {}
+
+    for module in selected_modules:
+        if module.id == "dns":
+            # Pass standard record types automatically
+            options[module.id] = ["a", "aaaa", "mx", "ns", "txt", "cname", "subdomains"]
+        elif module.id == "services":
+            mode = ss["services_port_mode"]
+
+            if mode == "custom":
+                spec = ss["services_custom_ports"].strip()
+
+                try:
+                    SERVICES.parse_ports(spec)
+                except ValueError as exc:
+                    errors.append(
+                        f"{module.title}: invalid custom ports. {exc}"
+                    )
+
+                port_option = f"custom:{spec}"
+            else:
+                port_option = mode
+
+            protocol_options = []
+            if ss["services_proto_tcp"]:
+                protocol_options.append(SERVICES.PROTO_TCP)
+            if ss["services_proto_udp"]:
+                protocol_options.append(SERVICES.PROTO_UDP)
+
+            if not protocol_options:
+                errors.append(f"{module.title}: select at least one protocol.")
+
+            options[module.id] = [port_option] + protocol_options
+        else:
+            options[module.id] = [
+                option.id
+                for option in module.options
+                if ss[f"opt_{module.id}_{option.id}"]
+            ]
+
+    for module in selected_modules:
+        # Bypasses options check for modules without sub-options
+        if module.id in ("dns", "services"):
+            continue
+
+        if not options[module.id]:
             errors.append(
-                f"{m.title}: choose at least one option (gear icon)."
+                f"{module.title}: choose at least one option "
+                "(gear icon)."
             )
 
     if (
@@ -174,19 +297,18 @@ def validate():
         and not ss["nmap_auth"]
     ):
         errors.append(
-            "Intrusive Nmap categories need the authorization checkbox ticked."
+            "Intrusive Nmap categories need the "
+            "authorization checkbox ticked."
         )
 
     return target, selected_modules, options, errors
 
 
-# ---------------------------------------------------------------------
-# Terminal panel
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
+# Terminal
+# ---------------------------------------------------------
 
 def terminal_panel(scan, status_at_run):
-    """Display scan output and progress."""
-
     lines, total = scan.snapshot()
 
     st.markdown(
@@ -196,21 +318,20 @@ def terminal_panel(scan, status_at_run):
 
     if scan.status != "idle":
         module_count = len(scan.module_ids)
-        completed = scan.done
 
         if scan.running:
             label = (
                 f"Running {scan.current} "
-                f"({completed}/{module_count} modules done)"
+                f"({scan.done}/{module_count} modules done)"
             )
         else:
             label = (
-                f"Finished {completed}/{module_count} modules "
+                f"Finished {scan.done}/{module_count} modules "
                 f"in {scan.duration:.1f}s"
             )
 
         st.progress(
-            completed / module_count if module_count else 0.0,
+            scan.done / module_count if module_count else 0.0,
             text=label,
         )
 
@@ -218,9 +339,9 @@ def terminal_panel(scan, status_at_run):
         st.rerun()
 
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 # Results helpers
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 
 def outcome(module_id):
     return scan.outcomes.get(module_id, {})
@@ -235,8 +356,6 @@ def rows(module_id, key):
 
 
 def table(module_id, key, columns):
-    """Display a result table or a status message."""
-
     data = rows(module_id, key)
 
     if data:
@@ -246,27 +365,28 @@ def table(module_id, key, columns):
             hide_index=True,
             width="stretch",
         )
-    else:
-        result = outcome(module_id)
+        return
 
-        message = {
-            "not_implemented": (
-                "Placeholder module: no data returned yet."
-            ),
-            "error": (
-                f"Module failed: {result.get('error')}"
-            ),
-        }.get(
-            result.get("status"),
-            "No data returned.",
-        )
+    result = outcome(module_id)
 
-        st.caption(message)
+    message = {
+        "not_implemented": (
+            "Placeholder module: no data returned yet."
+        ),
+        "error": (
+            f"Module failed: {result.get('error')}"
+        ),
+    }.get(
+        result.get("status"),
+        "No data returned.",
+    )
+
+    st.caption(message)
 
 
-# ---------------------------------------------------------------------
-# Results section
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
+# Results
+# ---------------------------------------------------------
 
 def results_section():
     st.markdown(
@@ -285,7 +405,7 @@ def results_section():
     if running:
         st.markdown(
             '<div class="empty">Scan in progress. '
-            'Results appear when it finishes.</div>',
+            'Results appear here when it finishes.</div>',
             unsafe_allow_html=True,
         )
         return
@@ -302,7 +422,7 @@ def results_section():
     names = ["Overview"] + [
         name
         for name, module_ids in tab_definitions
-        if any(module_id in ran for module_id in module_ids)
+        if any(mid in ran for mid in module_ids)
     ]
 
     tabs = dict(zip(names, st.tabs(names)))
@@ -313,12 +433,15 @@ def results_section():
 
         stats = [
             ("Target", scan.target.host),
-            ("Status", ui.STATUS[scan.status][0].title()),
+            (
+                "Status",
+                ui.STATUS[scan.status][0].title(),
+            ),
             (
                 "Started",
-                datetime.fromtimestamp(scan.started).strftime(
-                    "%H:%M:%S"
-                ),
+                datetime.fromtimestamp(
+                    scan.started
+                ).strftime("%H:%M:%S"),
             ),
             ("Duration", f"{scan.duration:.1f}s"),
         ]
@@ -364,26 +487,24 @@ def results_section():
         st.dataframe(
             [
                 {
-                    "module": m.title,
+                    "module": module.title,
                     "outcome": outcome_labels.get(
-                        outcome(m.id).get("status"),
+                        outcome(module.id).get("status"),
                         "Unknown",
                     ),
-                    "details": outcome(m.id).get("error", ""),
+                    "details": outcome(module.id).get("error", ""),
                 }
-                for m in MODS
-                if m.id in ran
+                for module in MODS
+                if module.id in ran
             ],
             hide_index=True,
             width="stretch",
         )
 
-    # DNS
     if "DNS" in tabs:
         with tabs["DNS"]:
             table("dns", "records", ["type", "value", "status"])
 
-    # Web
     if "Web" in tabs:
         with tabs["Web"]:
             table(
@@ -392,7 +513,6 @@ def results_section():
                 ["url", "status", "server", "title", "paths"],
             )
 
-    # Hosts and services
     if "Hosts & Services" in tabs:
         with tabs["Hosts & Services"]:
             if "hosts" in ran:
@@ -400,14 +520,26 @@ def results_section():
                 table("hosts", "hosts", ["ip", "state"])
 
             if "services" in ran:
-                st.caption("Services")
+                st.caption(
+                    "Port states ("
+                    + SERVICES.describe_selection(
+                        scan.options.get("services", [])
+                    )
+                    + ")"
+                )
+
                 table(
                     "services",
                     "services",
-                    ["ip", "port", "protocol", "service", "state"],
+                    [
+                        "ip",
+                        "port",
+                        "protocol",
+                        "service",
+                        "state",
+                    ],
                 )
 
-    # Nmap
     if "Nmap" in tabs:
         with tabs["Nmap"]:
             st.caption(
@@ -421,29 +553,31 @@ def results_section():
             table("nmap", "findings", ["script", "detail"])
 
 
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 # Main layout
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
 
 ui.header(scan.status)
 
-# Sidebar
 with st.sidebar:
     st.markdown("**Environment**")
+
     st.caption(
         f"Python {sys.version.split()[0]}  \n"
         f"Nmap: {'found' if NMAP_OK else 'not found'}"
     )
 
     st.markdown("**Backend status**")
+
     st.caption(
         "  \n".join(
-            f"{m.title}: {BACKENDS[m.id].STATUS}"
-            for m in MODS
+            f"{module.title}: {BACKENDS[module.id].STATUS}"
+            for module in MODS
         )
     )
 
     st.markdown("**Authorized use**")
+
     st.caption(
         "Only assess systems you own or have written permission to test."
     )
@@ -452,19 +586,17 @@ with st.sidebar:
 left, right = st.columns([5, 6], gap="medium")
 
 
-# Left: target and modules
 with left:
     with st.container(key="panel_target"):
         st.text_input(
             "Target",
-            placeholder="Enter domain, URL, or IP address",
+            placeholder="e.g. example.com",
             key="target",
             disabled=running,
         )
 
         st.caption(
-            "Only scan systems you own or have permission to assess. "
-            "Nothing runs until you click RUN RECON."
+            "Target constraints: DNS and Web modules require a domain name; Services accepts single IP/Domain; Hosts accepts CIDR ranges."
         )
 
     with st.container(key="panel_modules"):
@@ -496,10 +628,10 @@ with left:
             width="stretch",
         )
 
-        for m in MODS:
-            blocked = m.needs_nmap and not NMAP_OK
+        for module in MODS:
+            blocked = module.needs_nmap and not NMAP_OK
 
-            with st.container(key=f"row_{m.id}"):
+            with st.container(key=f"row_{module.id}"):
                 module_column, settings_column = st.columns(
                     [8, 1.2],
                     vertical_alignment="center",
@@ -507,15 +639,15 @@ with left:
 
                 with module_column:
                     st.checkbox(
-                        m.title,
-                        key=f"mod_{m.id}",
+                        module.title,
+                        key=f"mod_{module.id}",
                         disabled=running or blocked,
                     )
 
                     st.markdown(
                         ui.module_caption(
-                            m.desc,
-                            BACKENDS[m.id].STATUS,
+                            module.desc,
+                            BACKENDS[module.id].STATUS,
                             blocked,
                         ),
                         unsafe_allow_html=True,
@@ -524,10 +656,10 @@ with left:
                 with settings_column:
                     with st.popover(
                         "⚙",
-                        help=f"{m.title} options",
+                        help=f"{module.title} options",
                         width="stretch",
                     ):
-                        module_options(m)
+                        module_options(module)
 
         run_column, clear_column = st.columns([3, 2])
 
@@ -546,7 +678,10 @@ with left:
             width="stretch",
         )
 
-        selected_count = sum(ss[f"mod_{m.id}"] for m in MODS)
+        selected_count = sum(
+            ss[f"mod_{module.id}"]
+            for module in MODS
+        )
 
         st.caption(
             f"{selected_count} of {len(MODS)} modules selected"
@@ -556,11 +691,13 @@ with left:
             target, selected, options, errors = validate()
 
             if errors:
-                st.error("\n".join(f"- {error}" for error in errors))
+                st.error(
+                    "\n".join(f"- {error}" for error in errors)
+                )
             else:
                 ss.scan = start_scan(
                     target,
-                    [m.id for m in selected],
+                    [module.id for module in selected],
                     options,
                 )
                 st.rerun()
@@ -570,12 +707,10 @@ with left:
             st.rerun()
 
 
-# Right: terminal
 with right:
     st.fragment(
         run_every=0.5 if running else None
     )(terminal_panel)(scan, scan.status)
 
 
-# Results
 results_section()
